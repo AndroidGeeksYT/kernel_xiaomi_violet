@@ -326,6 +326,15 @@ void rcu_note_context_switch(bool preempt)
 				       ? rnp->gp_seq
 				       : rcu_seq_snap(&rnp->gp_seq));
 		rcu_preempt_ctxt_queue(rnp, rdp);
+	} else if (t->rcu_read_lock_nesting < 0 &&
+		   t->rcu_read_unlock_special.s) {
+
+		/*
+		 * Complete exit from RCU read-side critical section on
+		 * behalf of preempted instance of __rcu_read_unlock().
+		 */
+		rcu_read_unlock_special(t);
+		rcu_preempt_deferred_qs(t);
 	} else {
 		rcu_preempt_deferred_qs(t);
 	}
@@ -452,16 +461,15 @@ rcu_preempt_deferred_qs_irqrestore(struct task_struct *t, unsigned long flags)
 	 * t->rcu_read_unlock_special cannot change.
 	 */
 	special = t->rcu_read_unlock_special;
-	rdp = this_cpu_ptr(&rcu_data);
-	if (!special.s && !rdp->exp_deferred_qs) {
+	rdp = this_cpu_ptr(rcu_state_p->rda);
+	if (!special.s && !rdp->deferred_qs) {
 		local_irq_restore(flags);
 		return;
 	}
-	t->rcu_read_unlock_special.b.deferred_qs = false;
 	if (special.b.need_qs) {
 		rcu_qs();
 		t->rcu_read_unlock_special.b.need_qs = false;
-		if (!t->rcu_read_unlock_special.s && !rdp->exp_deferred_qs) {
+	if (!t->rcu_read_unlock_special.s && !rdp->deferred_qs) {
 			local_irq_restore(flags);
 			return;
 		}
@@ -473,8 +481,10 @@ rcu_preempt_deferred_qs_irqrestore(struct task_struct *t, unsigned long flags)
 	 * tasks are handled when removing the task from the
 	 * blocked-tasks list below.
 	 */
-	if (rdp->exp_deferred_qs) {
-		rcu_report_exp_rdp(rdp);
+	if (special.b.exp_need_qs || rdp->deferred_qs) {
+		t->rcu_read_unlock_special.b.exp_need_qs = false;
+		rdp->deferred_qs = false;
+		rcu_report_exp_rdp(rcu_state_p, rdp, true);
 		if (!t->rcu_read_unlock_special.s) {
 			local_irq_restore(flags);
 			return;
@@ -559,6 +569,67 @@ rcu_preempt_deferred_qs_irqrestore(struct task_struct *t, unsigned long flags)
  * quiescent state during context switch even though preemption
  * is disabled.  This function cannot be expected to understand these
  * nuances, so the caller must handle them.
+ */
+static bool rcu_preempt_need_deferred_qs(struct task_struct *t)
+{
+	return (this_cpu_ptr(&rcu_preempt_data)->deferred_qs ||
+		READ_ONCE(t->rcu_read_unlock_special.s)) &&
+	       !t->rcu_read_lock_nesting;
+}
+
+/*
+ * Report a deferred quiescent state if needed and safe to do so.
+ * As with rcu_preempt_need_deferred_qs(), "safe" involves only
+ * not being in an RCU read-side critical section.  The caller must
+ * evaluate safety in terms of interrupt, softirq, and preemption
+ * disabling.
+ */
+static void rcu_preempt_deferred_qs(struct task_struct *t)
+{
+	unsigned long flags;
+	bool couldrecurse = t->rcu_read_lock_nesting >= 0;
+
+	if (!rcu_preempt_need_deferred_qs(t))
+		return;
+	if (couldrecurse)
+		t->rcu_read_lock_nesting -= INT_MIN;
+	local_irq_save(flags);
+	rcu_preempt_deferred_qs_irqrestore(t, flags);
+	if (couldrecurse)
+		t->rcu_read_lock_nesting += INT_MIN;
+}
+
+/*
+ * Handle special cases during rcu_read_unlock(), such as needing to
+ * notify RCU core processing or task having blocked during the RCU
+ * read-side critical section.
+ */
+void rcu_read_unlock_special(struct task_struct *t)
+{
+	unsigned long flags;
+	bool preempt_bh_were_disabled =
+			!!(preempt_count() & (PREEMPT_MASK | SOFTIRQ_MASK));
+	bool irqs_were_disabled;
+
+	/* NMI handlers cannot block and cannot safely manipulate state. */
+	if (in_nmi())
+		return;
+
+	local_irq_save(flags);
+	irqs_were_disabled = irqs_disabled_flags(flags);
+	if ((preempt_bh_were_disabled || irqs_were_disabled) &&
+	    t->rcu_read_unlock_special.b.blocked) {
+		/* Need to defer quiescent state until everything is enabled. */
+		raise_softirq_irqoff(RCU_SOFTIRQ);
+		local_irq_restore(flags);
+		return;
+	}
+	rcu_preempt_deferred_qs_irqrestore(t, flags);
+}
+
+/*
+ * Dump detailed information for all tasks blocking the current RCU
+ * grace period on the specified rcu_node structure.
  */
 static bool rcu_preempt_need_deferred_qs(struct task_struct *t)
 {
@@ -696,21 +767,16 @@ static void rcu_flavor_sched_clock_irq(int user)
 {
 	struct task_struct *t = current;
 
-	if (user || rcu_is_cpu_rrupt_from_idle()) {
-		rcu_note_voluntary_context_switch(current);
-	}
 	if (t->rcu_read_lock_nesting > 0 ||
 	    (preempt_count() & (PREEMPT_MASK | SOFTIRQ_MASK))) {
 		/* No QS, force context switch if deferred. */
-		if (rcu_preempt_need_deferred_qs(t)) {
-			set_tsk_need_resched(t);
-			set_preempt_need_resched();
-		}
+		if (rcu_preempt_need_deferred_qs(t))
+			resched_cpu(smp_processor_id());
 	} else if (rcu_preempt_need_deferred_qs(t)) {
 		rcu_preempt_deferred_qs(t); /* Report deferred QS. */
 		return;
 	} else if (!t->rcu_read_lock_nesting) {
-		rcu_qs(); /* Report immediate QS. */
+		rcu_preempt_qs(); /* Report immediate QS. */
 		return;
 	}
 
@@ -746,48 +812,6 @@ void exit_rcu(void)
 	}
 	__rcu_read_unlock();
 	rcu_preempt_deferred_qs(current);
-}
-
-/*
- * Dump the blocked-tasks state, but limit the list dump to the
- * specified number of elements.
- */
-static void
-dump_blkd_tasks(struct rcu_node *rnp, int ncheck)
-{
-	int cpu;
-	int i;
-	struct list_head *lhp;
-	bool onl;
-	struct rcu_data *rdp;
-	struct rcu_node *rnp1;
-
-	raw_lockdep_assert_held_rcu_node(rnp);
-	pr_info("%s: grp: %d-%d level: %d ->gp_seq %ld ->completedqs %ld\n",
-		__func__, rnp->grplo, rnp->grphi, rnp->level,
-		(long)rnp->gp_seq, (long)rnp->completedqs);
-	for (rnp1 = rnp; rnp1; rnp1 = rnp1->parent)
-		pr_info("%s: %d:%d ->qsmask %#lx ->qsmaskinit %#lx ->qsmaskinitnext %#lx\n",
-			__func__, rnp1->grplo, rnp1->grphi, rnp1->qsmask, rnp1->qsmaskinit, rnp1->qsmaskinitnext);
-	pr_info("%s: ->gp_tasks %p ->boost_tasks %p ->exp_tasks %p\n",
-		__func__, READ_ONCE(rnp->gp_tasks), rnp->boost_tasks,
-		rnp->exp_tasks);
-	pr_info("%s: ->blkd_tasks", __func__);
-	i = 0;
-	list_for_each(lhp, &rnp->blkd_tasks) {
-		pr_cont(" %p", lhp);
-		if (++i >= ncheck)
-			break;
-	}
-	pr_cont("\n");
-	for (cpu = rnp->grplo; cpu <= rnp->grphi; cpu++) {
-		rdp = per_cpu_ptr(&rcu_data, cpu);
-		onl = !!(rdp->grpmask & rcu_rnp_online_cpus(rnp));
-		pr_info("\t%d: %c online: %ld(%d) offline: %ld(%d)\n",
-			cpu, ".o"[onl],
-			(long)rdp->rcu_onl_gp_seq, rdp->rcu_onl_gp_flags,
-			(long)rdp->rcu_ofl_gp_seq, rdp->rcu_ofl_gp_flags);
-	}
 }
 
 #else /* #ifdef CONFIG_PREEMPT_RCU */
@@ -891,6 +915,16 @@ static bool rcu_preempt_has_tasks(struct rcu_node *rnp)
 /*
  * Because there is no preemptible RCU, there can be no deferred quiescent
  * states.
+ */
+static bool rcu_preempt_need_deferred_qs(struct task_struct *t)
+{
+	return false;
+}
+static void rcu_preempt_deferred_qs(struct task_struct *t) { }
+
+/*
+ * Because preemptible RCU does not exist, we never have to check for
+ * tasks blocked within RCU read-side critical sections.
  */
 static bool rcu_preempt_need_deferred_qs(struct task_struct *t)
 {
