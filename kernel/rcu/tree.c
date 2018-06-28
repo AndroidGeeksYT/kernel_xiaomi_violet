@@ -229,8 +229,49 @@ static long rcu_get_n_cbs_cpu(int cpu)
 
 void rcu_softirq_qs(void)
 {
-	rcu_qs();
+	RCU_LOCKDEP_WARN(preemptible(), "rcu_bh_qs() invoked with preemption enabled!!!");
+	if (__this_cpu_read(rcu_bh_data.cpu_no_qs.s)) {
+		trace_rcu_grace_period(TPS("rcu_bh"),
+				       __this_cpu_read(rcu_bh_data.gpnum),
+				       TPS("cpuqs"));
+		__this_cpu_write(rcu_bh_data.cpu_no_qs.b.norm, false);
+	}
+}
+
+void rcu_softirq_qs(void)
+{
+	rcu_sched_qs();
+	rcu_preempt_qs();
 	rcu_preempt_deferred_qs(current);
+}
+
+/*
+ * Steal a bit from the bottom of ->dynticks for idle entry/exit
+ * control.  Initially this is for TLB flushing.
+ */
+#define RCU_DYNTICK_CTRL_MASK 0x1
+#define RCU_DYNTICK_CTRL_CTR  (RCU_DYNTICK_CTRL_MASK + 1)
+#ifndef rcu_eqs_special_exit
+#define rcu_eqs_special_exit() do { } while (0)
+#endif
+
+static DEFINE_PER_CPU(struct rcu_dynticks, rcu_dynticks) = {
+	.dynticks_nesting = DYNTICK_TASK_EXIT_IDLE,
+	.dynticks = ATOMIC_INIT(RCU_DYNTICK_CTRL_CTR),
+};
+
+/*
+ * There's a few places, currently just in the tracing infrastructure,
+ * that uses rcu_irq_enter() to make sure RCU is watching. But there's
+ * a small location where that will not even work. In those cases
+ * rcu_irq_enter_disabled() needs to be checked to make sure rcu_irq_enter()
+ * can be called.
+ */
+static DEFINE_PER_CPU(bool, disable_rcu_irq_enter);
+
+bool rcu_irq_enter_disabled(void)
+{
+	return this_cpu_read(disable_rcu_irq_enter);
 }
 
 /*
