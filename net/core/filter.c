@@ -4555,10 +4555,10 @@ static const struct bpf_func_proto bpf_lwt_push_encap_proto = {
 	.arg4_type	= ARG_CONST_SIZE
 };
 
+#if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 BPF_CALL_4(bpf_lwt_seg6_store_bytes, struct sk_buff *, skb, u32, offset,
 	   const void *, from, u32, len)
 {
-#if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 	struct seg6_bpf_srh_state *srh_state =
 		this_cpu_ptr(&seg6_bpf_srh_states);
 	void *srh_tlvs, *srh_end, *ptr;
@@ -4584,9 +4584,6 @@ BPF_CALL_4(bpf_lwt_seg6_store_bytes, struct sk_buff *, skb, u32, offset,
 
 	memcpy(skb->data + offset, from, len);
 	return 0;
-#else /* CONFIG_IPV6_SEG6_BPF */
-	return -EOPNOTSUPP;
-#endif
 }
 
 static const struct bpf_func_proto bpf_lwt_seg6_store_bytes_proto = {
@@ -4602,7 +4599,6 @@ static const struct bpf_func_proto bpf_lwt_seg6_store_bytes_proto = {
 BPF_CALL_4(bpf_lwt_seg6_action, struct sk_buff *, skb,
 	   u32, action, void *, param, u32, param_len)
 {
-#if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 	struct seg6_bpf_srh_state *srh_state =
 		this_cpu_ptr(&seg6_bpf_srh_states);
 	struct ipv6_sr_hdr *srh;
@@ -4650,9 +4646,6 @@ BPF_CALL_4(bpf_lwt_seg6_action, struct sk_buff *, skb,
 	default:
 		return -EINVAL;
 	}
-#else /* CONFIG_IPV6_SEG6_BPF */
-	return -EOPNOTSUPP;
-#endif
 }
 
 static const struct bpf_func_proto bpf_lwt_seg6_action_proto = {
@@ -4668,7 +4661,6 @@ static const struct bpf_func_proto bpf_lwt_seg6_action_proto = {
 BPF_CALL_3(bpf_lwt_seg6_adjust_srh, struct sk_buff *, skb, u32, offset,
 	   s32, len)
 {
-#if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 	struct seg6_bpf_srh_state *srh_state =
 		this_cpu_ptr(&seg6_bpf_srh_states);
 	void *srh_end, *srh_tlvs, *ptr;
@@ -4712,9 +4704,6 @@ BPF_CALL_3(bpf_lwt_seg6_adjust_srh, struct sk_buff *, skb, u32, offset,
 	srh_state->hdrlen += len;
 	srh_state->valid = 0;
 	return 0;
-#else /* CONFIG_IPV6_SEG6_BPF */
-	return -EOPNOTSUPP;
-#endif
 }
 
 static const struct bpf_func_proto bpf_lwt_seg6_adjust_srh_proto = {
@@ -4725,6 +4714,7 @@ static const struct bpf_func_proto bpf_lwt_seg6_adjust_srh_proto = {
 	.arg2_type	= ARG_ANYTHING,
 	.arg3_type	= ARG_ANYTHING,
 };
+#endif /* CONFIG_IPV6_SEG6_BPF */
 
 bool bpf_helper_changes_pkt_data(void *func)
 {
@@ -4746,11 +4736,12 @@ bool bpf_helper_changes_pkt_data(void *func)
 	    func == bpf_xdp_adjust_meta ||
 	    func == bpf_msg_pull_data ||
 	    func == bpf_xdp_adjust_tail ||
-	    func == bpf_lwt_push_encap ||
+#if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 	    func == bpf_lwt_seg6_store_bytes ||
 	    func == bpf_lwt_seg6_adjust_srh ||
-	    func == bpf_lwt_seg6_action
-	    )
+	    func == bpf_lwt_seg6_action ||
+#endif
+	    func == bpf_lwt_push_encap)
 		return true;
 
 	return false;
@@ -5090,12 +5081,14 @@ static const struct bpf_func_proto *
 lwt_seg6local_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
+#if IS_ENABLED(CONFIG_IPV6_SEG6_BPF)
 	case BPF_FUNC_lwt_seg6_store_bytes:
 		return &bpf_lwt_seg6_store_bytes_proto;
 	case BPF_FUNC_lwt_seg6_action:
 		return &bpf_lwt_seg6_action_proto;
 	case BPF_FUNC_lwt_seg6_adjust_srh:
 		return &bpf_lwt_seg6_adjust_srh_proto;
+#endif
 	default:
 		return lwt_out_func_proto(func_id, prog);
 	}
