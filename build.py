@@ -40,35 +40,42 @@ tg_post_build()
 }
 
 kernel_dir="${PWD}"
-CCACHE=$(command -v ccache)
+#CCACHE=$(command -v ccache)
 objdir="${kernel_dir}/out"
 anykernel=$HOME/anykernel
 builddir="${kernel_dir}/build"
 ZIMAGE=$kernel_dir/out/arch/arm64/boot/Image.gz-dtb
-kernel_name="perf_violet"
+kernel_name="geek"
 KERVER=$(make kernelversion)
-COMMIT_HEAD=$(git log --oneline -1)
+#COMMIT_HEAD=$(git log --oneline -1)
 zip_name="$kernel_name-$(date +"%d%m%Y-%H%M")-signed.zip"
-TC_DIR=$HOME/tc/
-CLANG_DIR=$TC_DIR/clang-r522817
+#TC_DIR=$HOME/tc/
+#CLANG_DIR=$TC_DIR/clang-r522817
 export CONFIG_FILE="vendor/violet-perf_defconfig"
 export ARCH="arm64"
-export KBUILD_BUILD_HOST=arch
-export KBUILD_BUILD_USER=selfmuser
-LINUX_COMPILE_BY="selfmuser"
-LINUX_COMPILE_HOST="arch"
-export PATH="$CLANG_DIR/bin:$PATH"
-export CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+export SUBARCH="arm64"
+export CC="clang"
+export LLVM="1"
+export LLVM_IAS="1"
+export CLANG_TRIPLE="aarch64-linux-gnu-"
+export CROSS_COMPILE=ARM32="arm-linux-gnueabi-"
+export LD="aarch64-linux-gnu-ld.bfd"
+export KBUILD_BUILD_HOST=debian
+export KBUILD_BUILD_USER=androidgeeks
+LINUX_COMPILE_BY="androidgeeks"
+LINUX_COMPILE_HOST="debian"
+#export PATH="$CLANG_DIR/bin:$PATH"
+#export CI_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 tg_post_msg "<b>Kernel : </b><code>$kernel_name</code>%0A<b>Upstream Version : </b><code>$KERVER</code>%0A<b>Machine : </b><code>$os</code>%0A<b>Cores : </b><code>$cores</code>%0A<b>Time : </b><code>$time</code>%0A<b>Branch : </b><code>$CI_BRANCH</code>%0A<b>Top Commit : </b><code>$COMMIT_HEAD</code>"
-if ! [ -d "$TC_DIR" ]; then
-    echo "Toolchain not found! Cloning to $TC_DIR..."
-    tg_post_msg "<code>Toolchain not found! Cloning toolchain</code>"
-    if ! git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b master $TC_DIR; then
-        echo "Cloning failed! Aborting..."
-        exit 1
-    fi
-fi
+#if ! [ -d "$TC_DIR" ]; then
+#    echo "Toolchain not found! Cloning to $TC_DIR..."
+#    tg_post_msg "<code>Toolchain not found! Cloning toolchain</code>"
+#    if ! git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b master $TC_DIR; then
+#        echo "Cloning failed! Aborting..."
+#        exit 1
+#    fi
+#fi
 # Colors
 NC='\\033[0m'
 RED='\\033[0;31m'
@@ -87,7 +94,7 @@ compile()
     make -j$(nproc --all) \\
     O=out \\
     ARCH=${ARCH}\\
-    CC="ccache clang" \\
+    CC="clang" \\
     CLANG_TRIPLE="aarch64-linux-gnu-" \\
     CROSS_COMPILE="aarch64-linux-gnu-" \\
     CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \\
@@ -100,7 +107,7 @@ completion() {
   COMPILED_IMAGE=arch/arm64/boot/Image.gz-dtb
   COMPILED_DTBO=arch/arm64/boot/dtbo.img
   if [[ -f ${COMPILED_IMAGE} && ${COMPILED_DTBO} ]]; then
-    git clone -q https://github.com/kibria5/AnyKernel3 $anykernel
+    git clone -q https://github.com/AndroidGeeksYT/AnyKernel3 $anykernel
     mv -f $ZIMAGE ${COMPILED_DTBO} $anykernel
     cd $anykernel
     find . -name "*.zip" -type f
