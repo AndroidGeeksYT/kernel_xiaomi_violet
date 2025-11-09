@@ -58,9 +58,11 @@ static inline void kfree_call_rcu(struct rcu_head *head, rcu_callback_t func)
 	call_rcu(head, func);
 }
 
+void rcu_qs(void);
+
 static inline void rcu_softirq_qs(void)
 {
-	rcu_sched_qs();
+	rcu_qs();
 }
 
 #define rcu_note_context_switch(preempt) \
