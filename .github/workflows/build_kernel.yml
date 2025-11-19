@@ -1,0 +1,63 @@
+name: Kernel Build CI
+on:
+  pull_request:
+    branches: [main]
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+jobs:
+  build:
+    # Use a powerful runner image
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⬇️ Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch history for git logs
+      - name: ⚙️ Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: 🛠️ Install Build Dependencies
+        run: |
+          echo "Installing core build packages and Java for zipsigner..."
+          # Install packages for kernel compilation and necessary tools
+          sudo apt-get update
+          sudo apt-get install -y git build-essential flex bison libssl-dev libelf-dev ccache bc lz4 util-linux jq curl
+          # Install OpenJDK for running the zipsigner.jar
+          sudo apt-get install -y openjdk-17-jdk
+      - name: 🚀 Run Kernel Build Script
+        # The script is executed, and its success/failure determines the subsequent steps.
+        # All build output is saved to error.log by the script.
+        run: |
+          python build.py
+      - name: 📤 Upload Error Log (If Build Fails)
+        # This step runs ONLY if the previous step (build.py) fails (exits with non-zero code)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compilation-error-log
+          path: error.log
+      - name: 📦 Find and Upload Kernel ZIP (If Build Succeeds)
+        id: upload_zip_artifact
+        # This step runs ONLY if the previous step (build.py) succeeds
+        if: success()
+        run: |
+          # Locate the ZIP file created by build.py (stored in $HOME, which is ${{ github.workspace }})
+          # The 'find' command safely locates the file based on the naming convention.
+          ZIP_FILE=$(find ${{ github.workspace }} -maxdepth 1 -type f -name 'GEEK-*-signed.zip' -print -quit)
+
+          if [ -f "$ZIP_FILE" ]; then
+            echo "Found kernel zip: $ZIP_FILE"
+            echo "kernel_zip_path=$ZIP_FILE" >> $GITHUB_OUTPUT # Set output for the next step
+          else
+            echo "ERROR: Kernel ZIP file (GEEK-*-signed.zip) not found! Exiting."
+            exit 1
+          fi
+      - name: ⬆️ Upload Kernel ZIP Artifact
+        # Only run if the ZIP file was found (check the output variable set in the previous step)
+        if: success() && steps.upload_zip_artifact.outputs.kernel_zip_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-kernel-zip
+          path: ${{ steps.upload_zip_artifact.outputs.kernel_zip_path }}
+          retention-days: 7
