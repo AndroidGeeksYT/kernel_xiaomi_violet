@@ -823,7 +823,7 @@ static int sony_mapping(struct hid_device *hdev, struct hid_input *hi,
 	return 0;
 }
 
-static int sony_register_touchpad(struct sony_sc *sc, int touch_count,
+static int __maybe_unused sony_register_touchpad(struct sony_sc *sc, int touch_count,
 					int w, int h)
 {
 	size_t name_sz;
